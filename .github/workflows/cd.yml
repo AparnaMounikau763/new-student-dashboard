@@ -1,0 +1,90 @@
+name: CD - Deploy to EC2 (Systemctl + Rollback)
+
+on:
+  workflow_run:
+    workflows: ["Student Dashboard CI/CD Pipeline"]
+    types: [completed]
+
+env:
+  JFROG_REPO: new-student-dashboard
+
+jobs:
+  deploy:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Get version from CI
+        run: echo "VERSION=${{ github.event.workflow_run.outputs.app_version }}" >> $GITHUB_ENV
+
+      - name: Deploy to EC2 via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+
+          script: |
+            set -e
+
+            APP_DIR=/home/ubuntu/app
+            BACKUP_DIR=/home/ubuntu/backup
+            mkdir -p $APP_DIR $BACKUP_DIR
+            cd $APP_DIR
+
+            FILE="app-${VERSION}.zip"
+            echo "Deploying version: $FILE"
+
+            # ================= BACKUP CURRENT =================
+            if [ -f current.zip ]; then
+              cp current.zip $BACKUP_DIR/backup_$(date +%s).zip
+              echo "Backup saved"
+            fi
+
+            # ================= DOWNLOAD FROM JFROG =================
+            curl -f -u "${{ secrets.JFROG_USER }}:${{ secrets.JFROG_PASSWORD }}" \
+              -O "https://${{ secrets.JFROG_REGISTRY }}/artifactory/${{ env.JFROG_REPO }}/$FILE"
+
+            mv $FILE current.zip
+
+            # ================= UNZIP NEW VERSION =================
+            rm -rf app
+            unzip -o current.zip
+
+            # ================= INSTALL DEPENDENCIES =================
+            python3 -m venv venv
+            source venv/bin/activate
+            pip install -r requirements.txt
+            pip install gunicorn
+
+            # ================= RESTART USING SYSTEMCTL =================
+            sudo systemctl restart student-dashboard
+            sleep 10
+
+            # ================= SINGLE HEALTH + API CHECK =================
+            STATUS=$(curl -s -o resp.txt -w "%{http_code}" http://localhost:5000/ready)
+            BODY=$(cat resp.txt)
+
+            echo "Health Check → $STATUS | $BODY"
+
+            if [ "$STATUS" = "200" ] && [[ "$BODY" == *"ok"* ]]; then
+              echo "Deployment SUCCESS"
+              exit 0
+            fi
+
+            # ================= FAILURE → ROLLBACK =================
+            echo "Deployment FAILED — Rolling back"
+
+            LAST_BACKUP=$(ls -t $BACKUP_DIR | head -n 1)
+            cp $BACKUP_DIR/$LAST_BACKUP current.zip
+
+            rm -rf app
+            unzip -o current.zip
+
+            source venv/bin/activate
+            pip install -r requirements.txt
+
+            sudo systemctl restart student-dashboard
+
+            echo "Rollback completed"
+            exit 1
