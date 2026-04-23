@@ -13,7 +13,6 @@ env:
 
 jobs:
 
-  # ================= SETUP =================
   setup:
     runs-on: ubuntu-latest
     steps:
@@ -30,7 +29,6 @@ jobs:
           pip install -r requirements.txt
           pip install pytest pytest-cov coverage pylint
 
-  # ================= ANALYZE =================
   analyze:
     needs: setup
     runs-on: ubuntu-latest
@@ -50,70 +48,50 @@ jobs:
       - run: pylint app || true
       - run: pytest --cov=app --cov-report=xml
 
-      - uses: sonarsource/sonarqube-scan-action@v2
+      - name: Sonar Scan
+        uses: sonarsource/sonarqube-scan-action@v2
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: https://sonarcloud.io
         with:
           args: >
-            -Dsonar.projectKey=YOUR_NEW_PROJECT_KEY
-            -Dsonar.organization=YOUR_ORG
+            -Dsonar.projectKey=AparnaMounikau763_new-student-dashboard
+            -Dsonar.organization=aparnamounikau763
             -Dsonar.sources=app
             -Dsonar.tests=tests
             -Dsonar.python.coverage.reportPaths=coverage.xml
             -Dsonar.python.version=3.10
+            -Dsonar.exclusions=**/__pycache__/**,**/*.pyc
 
-  # ================= BUILD =================
   build:
     needs: analyze
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - run: zip -r build.zip app run.py requirements.txt
 
-      - name: Create build artifact
-        run: |
-          mkdir dist
-          cp -r app dist/
-          cp run.py requirements.txt dist/
-          cd dist
-          zip -r build.zip .
-
-      - name: Upload build artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: student-dashboard-build
-          path: dist/build.zip
-
-  # ================= TEST =================
   test:
     needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-
       - run: |
           pip install -r requirements.txt
           pip install pytest pytest-cov coverage
-
       - run: pytest --cov=app --cov-fail-under=90
 
-  # ================= PUBLISH =================
   publish:
     needs: test
     runs-on: ubuntu-latest
-    outputs:
-      app_version: ${{ steps.versioning.outputs.version }}
-
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Generate Version
+      - name: Versioning
         id: versioning
         run: |
           git fetch --tags
@@ -132,7 +110,6 @@ jobs:
           fi
 
           VERSION="$MAJOR.$MINOR.$PATCH"
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "NEW_VERSION=$VERSION" >> $GITHUB_ENV
 
       - run: zip -r app-${NEW_VERSION}.zip app run.py requirements.txt
