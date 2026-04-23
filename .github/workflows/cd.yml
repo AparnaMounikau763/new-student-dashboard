@@ -1,9 +1,10 @@
-name: CD - Deploy to EC2 (Systemctl + Rollback)
+name: CD - Deploy to EC2
 
 on:
   workflow_run:
     workflows: ["Student Dashboard CI/CD Pipeline"]
-    types: [completed]
+    types:
+      - completed
 
 env:
   JFROG_REPO: new-student-dashboard
@@ -14,9 +15,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Get version from CI
-        run: echo "VERSION=${{ github.event.workflow_run.outputs.app_version }}" >> $GITHUB_ENV
-
       - name: Deploy to EC2 via SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -32,59 +30,83 @@ jobs:
             mkdir -p $APP_DIR $BACKUP_DIR
             cd $APP_DIR
 
-            FILE="app-${VERSION}.zip"
-            echo "Deploying version: $FILE"
+            echo "Fetching latest artifact..."
 
-            # ================= BACKUP CURRENT =================
-            if [ -f current.zip ]; then
-              cp current.zip $BACKUP_DIR/backup_$(date +%s).zip
-              echo "Backup saved"
+            LATEST_FILE=$(curl -s -u "${{ secrets.JFROG_USER }}:${{ secrets.JFROG_PASSWORD }}" \
+              "https://${{ secrets.JFROG_REGISTRY }}/artifactory/${{ env.JFROG_REPO }}/" \
+              | grep -o 'app-[0-9.]*.zip' | sort -V | tail -n 1)
+
+            if [ -z "$LATEST_FILE" ]; then
+              echo "No artifact found!"
+              exit 1
             fi
 
-            # ================= DOWNLOAD FROM JFROG =================
+            echo "Latest version: $LATEST_FILE"
+
+            # Backup current
+            if [ -f current.zip ]; then
+              cp current.zip $BACKUP_DIR/backup_$(date +%s).zip
+              echo "Backup created"
+            fi
+
+            # Download new version
             curl -f -u "${{ secrets.JFROG_USER }}:${{ secrets.JFROG_PASSWORD }}" \
-              -O "https://${{ secrets.JFROG_REGISTRY }}/artifactory/${{ env.JFROG_REPO }}/$FILE"
+              -O "https://${{ secrets.JFROG_REGISTRY }}/artifactory/${{ env.JFROG_REPO }}/$LATEST_FILE"
 
-            mv $FILE current.zip
+            mv $LATEST_FILE current.zip
 
-            # ================= UNZIP NEW VERSION =================
-            rm -rf app
+            # Stop old app
+            PID=$(lsof -t -i:5000 || true)
+            if [ ! -z "$PID" ]; then
+              kill -9 $PID || true
+            fi
+
+            # Deploy
+            rm -rf app venv
             unzip -o current.zip
 
-            # ================= INSTALL DEPENDENCIES =================
             python3 -m venv venv
             source venv/bin/activate
+            pip install --upgrade pip
             pip install -r requirements.txt
             pip install gunicorn
 
-            # ================= RESTART USING SYSTEMCTL =================
-            sudo systemctl restart student-dashboard
-            sleep 10
+            nohup bash -c "source venv/bin/activate && gunicorn -w 4 -b 0.0.0.0:5000 run:app" > app.log 2>&1 &
 
-            # ================= SINGLE HEALTH + API CHECK =================
-            STATUS=$(curl -s -o resp.txt -w "%{http_code}" http://localhost:5000/ready)
-            BODY=$(cat resp.txt)
+            sleep 15
 
-            echo "Health Check → $STATUS | $BODY"
+            echo "Running system validation..."
 
-            if [ "$STATUS" = "200" ] && [[ "$BODY" == *"ok"* ]]; then
-              echo "Deployment SUCCESS"
+            STATUS_CODE=$(curl -s -o response.txt -w "%{http_code}" http://localhost:5000/system-check || true)
+            BODY=$(cat response.txt || true)
+
+            echo "HTTP: $STATUS_CODE"
+            echo "Body: $BODY"
+
+            if [ "$STATUS_CODE" = "200" ] && [[ "$BODY" == *"ok"* ]]; then
+              echo "Deployment Successful"
               exit 0
             fi
 
-            # ================= FAILURE → ROLLBACK =================
-            echo "Deployment FAILED — Rolling back"
+            echo "Deployment Failed → Rolling Back"
 
             LAST_BACKUP=$(ls -t $BACKUP_DIR | head -n 1)
-            cp $BACKUP_DIR/$LAST_BACKUP current.zip
 
-            rm -rf app
+            if [ -z "$LAST_BACKUP" ]; then
+              echo "No backup available"
+              exit 1
+            fi
+
+            cp $BACKUP_DIR/$LAST_BACKUP current.zip
+            rm -rf app venv
             unzip -o current.zip
 
+            python3 -m venv venv
             source venv/bin/activate
             pip install -r requirements.txt
 
-            sudo systemctl restart student-dashboard
+            nohup bash -c "source venv/bin/activate && gunicorn -w 4 -b 0.0.0.0:5000 run:app" > app.log 2>&1 &
 
-            echo "Rollback completed"
+            echo "Rollback Completed"
             exit 1
+            
