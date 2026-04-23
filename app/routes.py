@@ -84,7 +84,6 @@ def search():
 
         data = [{"id": u.id, "username": u.username} for u in results]
 
-        # always 200 for this case
         return success_response("Search results fetched", data, 200)
 
     # Case 2: ?username=doesnotexist
@@ -129,7 +128,6 @@ def students():
 
         return success_response("Student created", status_code=201)
 
-    # GET
     students = Student.query.all()
     data = [{
         "id": s.id,
@@ -161,14 +159,12 @@ def update_student(id):
 
     data = request.json
 
-    # ✅ Prevent duplicate username
     if data.get('username'):
         existing_user = Student.query.filter_by(username=data['username']).first()
         if existing_user and existing_user.id != id:
             return error_response("Username already exists", 400)
         student.username = data['username']
 
-    # ✅ Prevent duplicate email
     if data.get('email'):
         existing_email = Student.query.filter_by(email=data['email']).first()
         if existing_email and existing_email.id != id:
@@ -194,9 +190,10 @@ def delete_student(id):
 
 # ---------------- SYSTEM ---------------- #
 
+# 🔴 FORCE FAILURE FOR ROLLBACK TESTING
 @main.route('/system-check', methods=['GET'])
 def system_check():
-    return jsonify({"status": "ok"}), 200
+    return "BROKEN", 500
 
 
 @main.teardown_app_request
