@@ -66,23 +66,19 @@ jobs:
             # Setup environment
             python3 -m venv venv
             source venv/bin/activate
-
             pip install -r requirements.txt
             pip install gunicorn
 
-<<<<<<< HEAD
-            #  BREAK APP ONLY IN DEPLOYMENT (FOR ROLLBACK TEST)
+            # 🔥 Break app only for rollback testing
             export BREAK_APP=true
 
-=======
->>>>>>> e105c0764968cf2040348994d14880017142b9e6
             # Start app
             nohup bash -c "source venv/bin/activate && gunicorn -w 4 -b 0.0.0.0:5000 run:app" > app.log 2>&1 &
 
             echo "Waiting for app to start..."
             sleep 15
 
-            #  IMPORTANT: check a REAL endpoint (not system-check)
+            # Check real endpoint
             STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:5000/students)
 
             if [ "$STATUS" = "200" ]; then
@@ -103,15 +99,9 @@ jobs:
             source venv/bin/activate
             pip install -r requirements.txt
 
-<<<<<<< HEAD
-            #  Start previous stable version (NO BREAK_APP here)
+            # Start previous stable version
             nohup bash -c "source venv/bin/activate && gunicorn -w 4 -b 0.0.0.0:5000 run:app" > app.log 2>&1 &
 
             echo "Rollback completed"
 
             exit 1
-=======
-            nohup bash -c "source venv/bin/activate && gunicorn -w 4 -b 0.0.0.0:5000 run:app" > app.log 2>&1 &
-
-            exit 1
->>>>>>> e105c0764968cf2040348994d14880017142b9e6
