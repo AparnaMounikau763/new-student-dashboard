@@ -1,6 +1,7 @@
 from flask import Blueprint, request, jsonify
 from .models import Student
 from .extensions import db
+import os
 
 main = Blueprint('main', __name__)
 
@@ -76,18 +77,14 @@ def search():
     query = request.args.get('q')
     username = request.args.get('username')
 
-    # Case 1: ?q=search_
     if query:
         results = Student.query.filter(
             Student.username.like(f"%{query}%")
         ).all()
 
         data = [{"id": u.id, "username": u.username} for u in results]
-
-        # always 200 for this case
         return success_response("Search results fetched", data, 200)
 
-    # Case 2: ?username=doesnotexist
     if username:
         results = Student.query.filter(
             Student.username.contains(username)
@@ -106,6 +103,11 @@ def search():
 
 @main.route('/students', methods=['GET', 'POST'])
 def students():
+
+    # 🔥 INTENTIONAL RUNTIME FAILURE ONLY IN DEPLOYMENT
+    if os.getenv("BREAK_APP") == "true":
+        raise Exception("Intentional crash for rollback testing")
+
     if request.method == 'POST':
         data = request.get_json()
 
@@ -129,7 +131,6 @@ def students():
 
         return success_response("Student created", status_code=201)
 
-    # GET
     students = Student.query.all()
     data = [{
         "id": s.id,
@@ -161,14 +162,12 @@ def update_student(id):
 
     data = request.json
 
-    # ✅ Prevent duplicate username
     if data.get('username'):
         existing_user = Student.query.filter_by(username=data['username']).first()
         if existing_user and existing_user.id != id:
             return error_response("Username already exists", 400)
         student.username = data['username']
 
-    # ✅ Prevent duplicate email
     if data.get('email'):
         existing_email = Student.query.filter_by(email=data['email']).first()
         if existing_email and existing_email.id != id:

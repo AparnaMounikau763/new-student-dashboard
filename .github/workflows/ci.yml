@@ -1,128 +1,108 @@
-name: Student Dashboard CI/CD Pipeline
+name: CD - Deploy to EC2
 
 on:
-  push:
-    branches: ["main"]
-
-permissions:
-  contents: write
+  workflow_run:
+    workflows: ["Student Dashboard CI/CD Pipeline"]
+    types: [completed]
 
 env:
-  PYTHON_VERSION: "3.10"
   JFROG_REPO: new-student-dashboard
 
 jobs:
-
-  setup:
+  deploy:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v1.0.3
         with:
-          fetch-depth: 0
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          script: |
+            set -e
 
-      - run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pytest pytest-cov coverage pylint
+            APP_DIR=/home/ubuntu/app
+            BACKUP_DIR=/home/ubuntu/backup
 
-  analyze:
-    needs: setup
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+            mkdir -p $APP_DIR $BACKUP_DIR
+            cd $APP_DIR
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
+            echo "Fetching latest artifact..."
 
-      - run: |
-          pip install -r requirements.txt
-          pip install pylint pytest pytest-cov coverage
+            LATEST=$(curl -s -u "${{ secrets.JFROG_USER }}:${{ secrets.JFROG_PASSWORD }}" \
+              "https://${{ secrets.JFROG_REGISTRY }}/artifactory/${{ env.JFROG_REPO }}/" \
+              | grep -o 'app-[0-9.]*.zip' | sort -V | tail -n 1)
 
-      - run: pylint app || true
-      - run: pytest --cov=app --cov-report=xml
+            [ -z "$LATEST" ] && echo "No artifact found" && exit 1
 
-      - name: Sonar Scan
-        uses: sonarsource/sonarqube-scan-action@v2
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: https://sonarcloud.io
-        with:
-          args: >
-            -Dsonar.projectKey=AparnaMounikau763_new-student-dashboard
-            -Dsonar.organization=aparnamounikau763
-            -Dsonar.sources=app
-            -Dsonar.tests=tests
-            -Dsonar.python.coverage.reportPaths=coverage.xml
-            -Dsonar.python.version=3.10
-            -Dsonar.exclusions=**/__pycache__/**,**/*.pyc
+            echo "Latest artifact: $LATEST"
 
-  build:
-    needs: analyze
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: zip -r build.zip app run.py requirements.txt
+            # Backup current
+            if [ -f current.zip ]; then
+              cp current.zip $BACKUP_DIR/backup_$(date +%s).zip
+            fi
 
-  test:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-      - run: |
-          pip install -r requirements.txt
-          pip install pytest pytest-cov coverage
-      - run: pytest --cov=app --cov-fail-under=90
+            # Download new artifact
+            curl -u "${{ secrets.JFROG_USER }}:${{ secrets.JFROG_PASSWORD }}" -O \
+              "https://${{ secrets.JFROG_REGISTRY }}/artifactory/${{ env.JFROG_REPO }}/$LATEST"
 
-  publish:
-    needs: test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
+            mv $LATEST current.zip
 
-      - name: Versioning
-        id: versioning
-        run: |
-          git fetch --tags
-          LATEST=$(git describe --tags --abbrev=0 2>/dev/null || echo "0.0.0")
-          MAJOR=$(echo $LATEST | cut -d. -f1)
-          MINOR=$(echo $LATEST | cut -d. -f2)
-          PATCH=$(echo $LATEST | cut -d. -f3)
-          MSG=$(git log -1 --pretty=%B)
+            # Stop existing app
+            PID=$(lsof -t -i:5000 || true)
+            if [ ! -z "$PID" ]; then
+              kill -9 $PID
+            fi
 
-          if [[ "$MSG" == BREAK:* ]]; then
-            MAJOR=$((MAJOR+1)); MINOR=0; PATCH=0
-          elif [[ "$MSG" == feat:* ]]; then
-            MINOR=$((MINOR+1)); PATCH=0
-          else
-            PATCH=$((PATCH+1))
-          fi
+            # Clean old app
+            rm -rf app venv
 
-          VERSION="$MAJOR.$MINOR.$PATCH"
-          echo "NEW_VERSION=$VERSION" >> $GITHUB_ENV
+            # Extract new app
+            unzip -o current.zip
 
-      - run: zip -r app-${NEW_VERSION}.zip app run.py requirements.txt
+            # Setup environment
+            python3 -m venv venv
+            source venv/bin/activate
 
-      - name: Upload to JFrog
-        run: |
-          curl -u ${{ secrets.JFROG_USER }}:${{ secrets.JFROG_PASSWORD }} \
-          -T app-${NEW_VERSION}.zip \
-          "https://${{ secrets.JFROG_REGISTRY }}/artifactory/${{ env.JFROG_REPO }}/app-${NEW_VERSION}.zip"
+            pip install -r requirements.txt
+            pip install gunicorn
 
-      - name: Tag
-        run: |
-          git config user.name github-actions
-          git config user.email github-actions@github.com
-          git tag $NEW_VERSION
-          git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git $NEW_VERSION
+            #  BREAK APP ONLY IN DEPLOYMENT (FOR ROLLBACK TEST)
+            export BREAK_APP=true
+
+            # Start app
+            nohup bash -c "source venv/bin/activate && gunicorn -w 4 -b 0.0.0.0:5000 run:app" > app.log 2>&1 &
+
+            echo "Waiting for app to start..."
+            sleep 15
+
+            #  IMPORTANT: check a REAL endpoint (not system-check)
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:5000/students)
+
+            if [ "$STATUS" = "200" ]; then
+              echo "Deployment successful"
+              exit 0
+            fi
+
+            echo "Deployment failed - Rolling back..."
+
+            LAST=$(ls -t $BACKUP_DIR | head -n 1)
+
+            cp $BACKUP_DIR/$LAST current.zip
+
+            rm -rf app venv
+            unzip -o current.zip
+
+            python3 -m venv venv
+            source venv/bin/activate
+            pip install -r requirements.txt
+
+            # Start previous stable version (NO BREAK_APP here)
+            nohup bash -c "source venv/bin/activate && gunicorn -w 4 -b 0.0.0.0:5000 run:app" > app.log 2>&1 &
+
+            echo "Rollback completed"
+
+            exit 1
