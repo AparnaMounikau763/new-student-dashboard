@@ -1,18 +1,20 @@
 import pytest
-from app import create_app, db
+from app import create_app
+from app.extensions import db
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def app():
-    app = create_app()
-    app.config['TESTING'] = True
+    app = create_app({
+        "TESTING": True,
+        "SQLALCHEMY_DATABASE_URI": "sqlite:///test.db"
+    })
 
     with app.app_context():
-        db.drop_all()     # 🔥 clear old data
-        db.create_all()   # 🔥 fresh DB
+        db.create_all()
+        yield app
+        db.session.remove()
+        db.drop_all()
 
-    yield app
-
-
-@pytest.fixture
+@pytest.fixture(scope="session")
 def client(app):
     return app.test_client()

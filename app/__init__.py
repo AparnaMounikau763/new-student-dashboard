@@ -1,21 +1,22 @@
 from flask import Flask
-from flask_sqlalchemy import SQLAlchemy
+from app.extensions import db
+from app.routes import main
 
-db = SQLAlchemy()
-
-def create_app():
+def create_app(config=None):
     app = Flask(__name__)
-    app.config['SECRET_KEY'] = 'secret'
-    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///database.db'
+
+    # Default config
+    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///students.db'
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
+    # Override with test config
+    if config:
+        app.config.update(config)
+
     db.init_app(app)
-
-    from . import models   # ✅ IMPORTANT
-    from .routes import main
-
     app.register_blueprint(main)
 
+    # Create tables for testing
     with app.app_context():
         db.create_all()
 
