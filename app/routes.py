@@ -104,7 +104,7 @@ def search():
 @main.route('/students', methods=['GET', 'POST'])
 def students():
 
-    # 🔥 INTENTIONAL RUNTIME FAILURE ONLY IN DEPLOYMENT
+    # 🔥 Break ONLY in deployment (NOT in CI)
     if os.getenv("BREAK_APP") == "true":
         raise Exception("Intentional crash for rollback testing")
 

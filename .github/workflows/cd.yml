@@ -36,49 +36,39 @@ jobs:
               "https://${{ secrets.JFROG_REGISTRY }}/artifactory/${{ env.JFROG_REPO }}/" \
               | grep -o 'app-[0-9.]*.zip' | sort -V | tail -n 1)
 
-            [ -z "$LATEST" ] && echo "No artifact found" && exit 1
+            [ -z "$LATEST" ] && exit 1
 
             echo "Latest artifact: $LATEST"
 
-            # Backup current
             if [ -f current.zip ]; then
               cp current.zip $BACKUP_DIR/backup_$(date +%s).zip
             fi
 
-            # Download new artifact
             curl -u "${{ secrets.JFROG_USER }}:${{ secrets.JFROG_PASSWORD }}" -O \
               "https://${{ secrets.JFROG_REGISTRY }}/artifactory/${{ env.JFROG_REPO }}/$LATEST"
 
             mv $LATEST current.zip
 
-            # Stop existing app
             PID=$(lsof -t -i:5000 || true)
             if [ ! -z "$PID" ]; then
               kill -9 $PID
             fi
 
-            # Clean old app
             rm -rf app venv
-
-            # Extract new app
             unzip -o current.zip
 
-            # Setup environment
             python3 -m venv venv
             source venv/bin/activate
             pip install -r requirements.txt
             pip install gunicorn
 
-            # 🔥 Break app only for rollback testing
+            # 🔥 BREAK APP ONLY HERE
             export BREAK_APP=true
 
-            # Start app
             nohup bash -c "source venv/bin/activate && gunicorn -w 4 -b 0.0.0.0:5000 run:app" > app.log 2>&1 &
 
-            echo "Waiting for app to start..."
             sleep 15
 
-            # Check real endpoint
             STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:5000/students)
 
             if [ "$STATUS" = "200" ]; then
@@ -99,7 +89,6 @@ jobs:
             source venv/bin/activate
             pip install -r requirements.txt
 
-            # Start previous stable version
             nohup bash -c "source venv/bin/activate && gunicorn -w 4 -b 0.0.0.0:5000 run:app" > app.log 2>&1 &
 
             echo "Rollback completed"
