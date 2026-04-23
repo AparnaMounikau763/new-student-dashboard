@@ -49,9 +49,78 @@ jobs:
 
             python3 -m venv venv
             source venv/bin/activate
+            name: CD - Deploy to EC2
+
+on:
+  workflow_run:
+    workflows: ["Student Dashboard CI/CD Pipeline"]
+    types: [completed]
+
+env:
+  JFROG_REPO: new-student-dashboard
+
+jobs:
+  deploy:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+
+          script: |
+            set -e
+            APP_DIR=/home/ubuntu/app
+            BACKUP_DIR=/home/ubuntu/backup
+            mkdir -p $APP_DIR $BACKUP_DIR
+            cd $APP_DIR
+
+            LATEST=$(curl -s -u "${{ secrets.JFROG_USER }}:${{ secrets.JFROG_PASSWORD }}" \
+              "https://${{ secrets.JFROG_REGISTRY }}/artifactory/${{ env.JFROG_REPO }}/" \
+              | grep -o 'app-[0-9.]*.zip' | sort -V | tail -n 1)
+
+            [ -z "$LATEST" ] && exit 1
+
+            [ -f current.zip ] && cp current.zip $BACKUP_DIR/backup_$(date +%s).zip
+
+            curl -u "${{ secrets.JFROG_USER }}:${{ secrets.JFROG_PASSWORD }}" -O \
+              "https://${{ secrets.JFROG_REGISTRY }}/artifactory/${{ env.JFROG_REPO }}/$LATEST"
+
+            mv $LATEST current.zip
+
+            PID=$(lsof -t -i:5000 || true)
+            [ ! -z "$PID" ] && kill -9 $PID || true
+
+            rm -rf app venv
+            unzip -o current.zip
+
+            python3 -m venv venv
+            source venv/bin/activate
             pip install -r requirements.txt
             pip install gunicorn
 
+            nohup bash -c "source venv/bin/activate && gunicorn -w 4 -b 0.0.0.0:5000 run:app" > app.log 2>&1 &
+            sleep 15
+
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:5000/system-check)
+
+            if [ "$STATUS" = "200" ]; then
+              exit 0
+            fi
+
+            LAST=$(ls -t $BACKUP_DIR | head -n 1)
+            cp $BACKUP_DIR/$LAST current.zip
+            rm -rf app venv
+            unzip -o current.zip
+            python3 -m venv venv
+            source venv/bin/activate
+            pip install -r requirements.txt
+            nohup bash -c "source venv/bin/activate && gunicorn -w 4 -b 0.0.0.0:5000 run:app" > app.log 2>&1 &
+            exit 1
             nohup bash -c "source venv/bin/activate && gunicorn -w 4 -b 0.0.0.0:5000 run:app" > app.log 2>&1 &
             sleep 15
 
